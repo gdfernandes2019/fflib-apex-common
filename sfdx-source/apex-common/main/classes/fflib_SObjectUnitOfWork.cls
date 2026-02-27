@@ -96,12 +96,12 @@ public virtual class fflib_SObjectUnitOfWork
 	    void emptyRecycleBin(List<SObject> objList);
     }
 
-    public interface IDML2 extends IDML
+    public interface IDMLUpsertable
     {
         void dmlUpsert(List<SObject> objList, Schema.SObjectField externalId);
     }
 
-    public virtual class SimpleDML implements IDML2
+    public virtual class SimpleDML implements IDML, IDMLUpsertable
     {
         public virtual void dmlInsert(List<SObject> objList)
         {
@@ -113,10 +113,7 @@ public virtual class fflib_SObjectUnitOfWork
         }
         public virtual void dmlUpsert(List<SObject> objList, Schema.SObjectField externalId)
         {
-            if (!objList.isEmpty())
-            {
-                Database.upsert(objList, externalId);
-            }
+            Database.upsert(objList, externalId);
         }
         public virtual void dmlDelete(List<SObject> objList)
         {
@@ -508,8 +505,7 @@ public virtual class fflib_SObjectUnitOfWork
      **/
     public void registerUpsert(List<SObject> records, Schema.SObjectField externalIdField) 
     {
-        for (SObject record : records) 
-        {
+        for (SObject record : records) {
             this.registerUpsert(record, externalIdField, null, null);
         }
     }
@@ -531,55 +527,46 @@ public virtual class fflib_SObjectUnitOfWork
         assertForNonEventSObjectType(sObjName);
         assertForSupportedSObjectType(m_upsertRecordsPerType, sObjName);
 
-        if (externalIdField == null)
-        {
+        if (externalIdField == null) {
             throw new UnitOfWorkException('Invalid argument: externalIdField. If you want to upsert by id, use the registerUpsert method that has only one argument');
         }
 
         Schema.SObjectField registeredExternalId = m_externalIdToUpsertPerType.get(sObjName);
-        if (registeredExternalId == externalIdField)
-        {
-            m_upsertRecordsPerType.get(sObjName).add(record);
-            if (relatedToParentRecord != null && relatedToParentField != null)
-            {
-                registerRelationship(record, relatedToParentField, relatedToParentRecord);
-            }
+        if (registeredExternalId == externalIdField) {
+            putUpsertRecord(sObjName,record,relatedToParentRecord,relatedToParentField);
             return;
         }
-        if (registeredExternalId != null)
-        {
+
+        if (registeredExternalId != null) {
             throw new UnitOfWorkException(String.format(
                 'SObject type {0} has already registered an upsert by external id {1}, you cannot use another in this unit of work.',
                 new List<String> { sObjName, registeredExternalId.getDescribe().getName() }
             ));
         }
-        if (!(m_dml instanceof IDML2))
-        {
-            throw new UnitOfWorkException('Upsert by external ID requires IDML2 implementation. Current DML implementation does not support this feature.');
+        if (!(m_dml instanceof IDMLUpsertable)) {
+            throw new UnitOfWorkException('Upsert by external ID requires IDMLUpsertable implementation. Current IDML implementation does not support this feature.');
         }
 
-        String externalIdFieldName = externalIdField.getDescribe().getName();
-        Boolean relatedHasExternalIdField = sObjectType.getDescribe().fields.getMap().keySet().contains(externalIdFieldName.toLowerCase());
-        Boolean externalIdFieldIsValid = externalIdField.getDescribe().isIdLookup();
+        DescribeFieldResult fieldDescribe = externalIdField.getDescribe();
 
-        if (record.Id != null && !externalIdFieldName.equalsIgnoreCase('Id'))
-        {
-            throw new UnitOfWorkException('When upserting by external id, the record cannot already have the standard id populated');
+        if (record.Id != null && !fieldDescribe.getName().equalsIgnoreCase('Id')) {
+            throw new UnitOfWorkException('When upserting by external id, the record cannot already have the standard Id populated');
         }
-        if (!relatedHasExternalIdField)
-        {
+        if (sObjectType != fieldDescribe.getSObjectType()) {
             throw new UnitOfWorkException('Invalid argument: externalIdField. Field supplied is not a known field on the target sObject.');
         }
-        if (!externalIdFieldIsValid)
-        {
+        if (!fieldDescribe.isIdLookup()) {
             throw new UnitOfWorkException('Invalid argument: externalIdField. Field supplied cannot be used with upsert.');
         }
 
-        m_upsertRecordsPerType.get(sObjName).add(record);
         m_externalIdToUpsertPerType.put(sObjName, externalIdField);
 
-        if (relatedToParentRecord != null && relatedToParentField != null)
-        {
+        putUpsertRecord(sObjName,record,relatedToParentRecord,relatedToParentField);
+    }
+
+    private void putUpsertRecord(String sObjName, SObject record, SObject relatedToParentRecord, SObjectField relatedToParentField){
+        m_upsertRecordsPerType.get(sObjName).add(record);
+        if (relatedToParentRecord != null && relatedToParentField != null) {
             registerRelationship(record, relatedToParentField, relatedToParentRecord);
         }
     }
@@ -816,23 +803,19 @@ public virtual class fflib_SObjectUnitOfWork
 		}
 	}
 
-    private void upsertDmlByType() 
-    {
-        String sobjName;
-        for (Schema.SObjectType sObjectType : m_sObjectTypes) {
-            sobjName = sObjectType.getDescribe().getName();
-            List<SObject> upsertRecords = m_upsertRecordsPerType.get(sobjName);
-            if (upsertRecords != null && !upsertRecords.isEmpty()) {
-                m_relationships.get(sobjName).resolve();
-                if (m_dml instanceof IDML2) {
-                    IDML2 dml2 = (IDML2) m_dml;
-                    dml2.dmlUpsert(upsertRecords, m_externalIdToUpsertPerType.get(sobjName));
-                } else {
-                    throw new UnitOfWorkException('Upsert by external ID requires IDML2 implementation. Current DML implementation does not support this feature.');
-                }
-            }
+	private void upsertDmlByType()
+	{
+		String sobjName;
+		for (Schema.SObjectType sObjectType : m_sObjectTypes) {
+			sobjName = sObjectType.getDescribe().getName();
+			List<SObject> upsertRecords = m_upsertRecordsPerType.get(sobjName);
+			if (upsertRecords != null && !upsertRecords.isEmpty()) {
+				m_relationships.get(sobjName).resolve();
+				IDMLUpsertable dmlUpsertable = (IDMLUpsertable) m_dml;
+				dmlUpsertable.dmlUpsert(upsertRecords, m_externalIdToUpsertPerType.get(sobjName));
+			}
 		}
-    }
+	}
 
 	private void deleteDmlByType()
 	{

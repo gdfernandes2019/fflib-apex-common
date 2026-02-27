@@ -757,7 +757,7 @@ private with sharing class fflib_SObjectUnitOfWorkTest
     }
 
     @isTest
-    private static void testRegisterUpsertByExternalId_When_CustomIDMLNotIDML2_Expect_Exception() {
+    private static void testRegisterUpsertByExternalId_When_CustomIDMLNotIDMLUpsertable_Expect_Exception() {
         // GIVEN an existing opportunity and a custom DML that implements IDML but not IDML2
         Opportunity existingOpp = new Opportunity(Name = 'Existing Opportunity', StageName = 'Open', CloseDate = System.today());
         insert existingOpp;
@@ -768,19 +768,12 @@ private with sharing class fflib_SObjectUnitOfWorkTest
         fflib_SObjectUnitOfWork uow = new fflib_SObjectUnitOfWork(MY_SOBJECTS, mockDML);
 
         // WHEN we try to register an upsert by external ID THEN an exception is thrown at registration (MockDML doesn't implement IDML2)
-        Boolean exceptionThrown = false;
-        fflib_SObjectUnitOfWork.UnitOfWorkException caughtException = null;
         try {
             uow.registerUpsert(new List<Opportunity>{existingOpp}, Opportunity.Id);
+            Assert.fail('Expected UnitOfWorkException to be thrown when using IDML without IDMLUpsertable');
         } catch (fflib_SObjectUnitOfWork.UnitOfWorkException e) {
-            exceptionThrown = true;
-            caughtException = e;
+            Assert.areEqual('Upsert by external ID requires IDMLUpsertable implementation. Current IDML implementation does not support this feature.',e.getMessage());
         }
-
-        System.assert(exceptionThrown, 'Expected UnitOfWorkException to be thrown when using IDML without IDML2');
-        System.assert(caughtException != null, 'Expected to catch UnitOfWorkException');
-        System.assert(caughtException.getMessage().contains('Upsert by external ID requires IDML2 implementation'),
-            'Expected exception message to mention IDML2 requirement');
     }
 
     @isTest
